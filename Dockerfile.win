@@ -1,0 +1,5 @@
+FROM l4d2
+COPY --chown=ubuntu:ubuntu addons l4d2/left4dead2/addons
+COPY --chown=ubuntu:ubuntu cfg l4d2/left4dead2/cfg
+COPY --chown=ubuntu:ubuntu ems l4d2/left4dead2/ems
+COPY --chown=ubuntu:ubuntu host.txt motd.txt l4d2/left4dead2/

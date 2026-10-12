@@ -1,0 +1,61 @@
+# Windows(Docker Desktop)용. virtiofs 바인드 마운트 대신 l4d2 이미지에 복사해 넣는다.
+#
+# 1. 서버 실행/종료
+#   docker compose -f docker-compose-win.yml up -d --build      # 서버 2대 백그라운드 실행 (addons/cfg 변경도 반영)
+#   docker compose -f docker-compose-win.yml up -d --build server1
+#   docker compose -f docker-compose-win.yml down               # 전체 종료 (컨테이너 삭제)
+#   docker compose -f docker-compose-win.yml stop server1       # server1 만 종료 (컨테이너 유지)
+#
+# 2. 변경 반영
+#   docker compose -f docker-compose-win.yml up -d --build      # addons/, cfg/, environment 변경 반영
+#   docker compose -f docker-compose-win.yml restart server1    # 프로세스만 재시작. 파일/environment 변경은 반영 안 됨
+#
+# 3. 확인
+#   docker compose -f docker-compose-win.yml ps
+#   docker compose -f docker-compose-win.yml logs -f server1
+#   docker compose -f docker-compose-win.yml attach server1     # 서버 콘솔 접속 (나가기: Ctrl+P, Ctrl+Q)
+
+services:
+  server1:
+    container_name: l4d2-server1
+    build:
+      context: .
+      dockerfile: Dockerfile.win
+    image: l4d2-win
+    ports:
+      - "30000:30000/udp"
+    restart: unless-stopped
+    init: true
+    stdin_open: true
+    tty: true
+    environment:
+      HOSTNAME: "Rainy Server #1"
+      PORT: 30000
+      STEAM_GROUP: 46571454
+      STEAM_GROUP_EXCLUSIVE: 0
+      DEFAULT_MAP: c1m2_streets
+      DEFAULT_MODE: realism
+      GAME_TYPES: coop,realism
+      EXTRA_ARGS: "-insecure +sv_setmax 31"
+
+  server2:
+    container_name: l4d2-server2
+    build:
+      context: .
+      dockerfile: Dockerfile.win
+    image: l4d2-win
+    ports:
+      - "30001:30001/udp"
+    restart: unless-stopped
+    init: true
+    stdin_open: true
+    tty: true
+    environment:
+      HOSTNAME: "Rainy Server #2"
+      PORT: 30001
+      STEAM_GROUP: 46571454
+      STEAM_GROUP_EXCLUSIVE: 0
+      DEFAULT_MAP: c1m2_streets
+      DEFAULT_MODE: realism
+      GAME_TYPES: coop,realism
+      EXTRA_ARGS: "-insecure +sv_setmax 31"
