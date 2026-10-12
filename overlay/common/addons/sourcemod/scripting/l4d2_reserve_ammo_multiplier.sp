@@ -1,0 +1,254 @@
+#pragma semicolon 1
+#pragma newdecls required
+
+#include <sourcemod>
+#include <sdktools>
+#include <multicolors>
+
+#define STORED_FILE        "l4d2_reserve_ammo_multiplier.txt"
+#define AMMO_COUNT         6
+#define DEFAULT_MULTIPLIER 1.0
+#define MIN_MULTIPLIER     1.0
+#define MAX_MULTIPLIER     5.0
+
+// m_iAmmo offsets for each gun category
+// Index -> cvar name mapping
+static const char g_sConVarAmmoGunList[AMMO_COUNT][] = {
+    "ammo_smg_max",
+    "ammo_shotgun_max",
+    "ammo_autoshotgun_max",
+    "ammo_huntingrifle_max",
+    "ammo_sniperrifle_max",
+    "ammo_assaultrifle_max"
+};
+
+static const int g_iConVarAmmoGunDefault[AMMO_COUNT] = {
+    650,    // smg
+    72,     // shotgun
+    90,     // autoshotgun
+    150,    // huntingrifle
+    180,    // sniperrifle
+    360     // assaultrifle
+};
+
+ConVar g_hConVarAmmo[AMMO_COUNT];
+int    g_iPreAmmoStored[AMMO_COUNT];
+int    g_iAmmoStored[AMMO_COUNT];
+
+public Plugin myinfo =
+{
+    name        = "L4D2 Reserve Ammo Multiplier",
+    author      = "Rainy",
+    description = "예비 탄약 소지량을 배율로 조정합니다.",
+    version     = "1.4.2",
+    url         = "https://github.com/rainy-me/l4d2-sourcemod/tree/main/plugins/rainy/l4d2_reserve_ammo_multiplier"
+};
+
+public void OnPluginStart()
+{
+    LoadTranslations("l4d2_reserve_ammo_multiplier.phrases");
+
+    // Init cvars and store defaults
+    for (int i = 0; i < AMMO_COUNT; i++)
+    {
+        g_hConVarAmmo[i]    = FindConVar(g_sConVarAmmoGunList[i]);
+        // 리로드 시에는 이전 배율이 cvar에 남아 있으므로 현재 값을 기준으로 삼는다
+        int current         = g_hConVarAmmo[i] != null ? g_hConVarAmmo[i].IntValue : g_iConVarAmmoGunDefault[i];
+        g_iPreAmmoStored[i] = current;
+        g_iAmmoStored[i]    = current;
+    }
+
+    HookEvent("round_freeze_end", Event_RoundFreezeEnd);
+
+    RegConsoleCmd("sm_amm", Cmd_AmmoMultiplier, "Show reserve ammo multiplier, or set it: !amm <1.0~5.0>");
+}
+
+void Event_RoundFreezeEnd(Event event, const char[] name, bool dontBroadcast)
+{
+    float multiplier = DEFAULT_MULTIPLIER;
+    if (!ReadMultiplierFromFile(multiplier))
+    {
+        for (int i = 0; i < AMMO_COUNT; i++)
+            SetConVarAmmo(i, g_iConVarAmmoGunDefault[i]);
+        WriteMultiplierToFile(multiplier);
+        return;
+    }
+
+    if (multiplier > DEFAULT_MULTIPLIER)
+    {
+        for (int i = 0; i < AMMO_COUNT; i++)
+            SetConVarAmmo(i, RoundFloat(float(g_iConVarAmmoGunDefault[i]) * multiplier));
+        CPrintToChatAll("%t", "Ammo Setting Load", multiplier);
+    }
+}
+
+Action Cmd_AmmoMultiplier(int client, int args)
+{
+    float multiplier = DEFAULT_MULTIPLIER;
+
+    if (args == 0)
+    {
+        ReadMultiplierFromFile(multiplier);
+        CPrintToChatAll("%t", "Current Multiplier", multiplier);
+        return Plugin_Handled;
+    }
+
+    char arg[8];
+    GetCmdArg(1, arg, sizeof(arg));
+    if (args != 1 || !IsCharNumeric(arg[0]))
+    {
+        CReplyToCommand(client, "%t", "Help");
+        return Plugin_Handled;
+    }
+
+    multiplier = ClampFloat(StringToFloat(arg), MIN_MULTIPLIER, MAX_MULTIPLIER);
+
+    for (int i = 0; i < AMMO_COUNT; i++)
+        SetConVarAmmo(i, RoundFloat(float(g_iConVarAmmoGunDefault[i]) * multiplier));
+    WriteMultiplierToFile(multiplier);
+    ReCalculateReserveAmmo();
+
+    if (multiplier == DEFAULT_MULTIPLIER)
+        CPrintToChatAll("%t", "Ammo Reset");
+    else
+        CPrintToChatAll("%t", "Ammo Setting", multiplier);
+    return Plugin_Handled;
+}
+
+// ==========================================================================
+// AMMO / CVAR MANAGEMENT
+// ==========================================================================
+
+void SetConVarAmmo(int index, int value)
+{
+    int intAbs              = (value < 0) ? -value : value;
+    g_iPreAmmoStored[index] = g_iAmmoStored[index];
+    g_iAmmoStored[index]    = intAbs;
+
+    if (g_hConVarAmmo[index] != null)
+    {
+        int flags                     = g_hConVarAmmo[index].Flags;
+        g_hConVarAmmo[index].Flags    = flags & ~FCVAR_NOTIFY;
+        g_hConVarAmmo[index].IntValue = intAbs;
+        g_hConVarAmmo[index].Flags    = flags;
+    }
+}
+
+void ReCalculateReserveAmmo()
+{
+    for (int client = 1; client <= MaxClients; client++)
+    {
+        if (!IsClientInGame(client) || GetClientTeam(client) != 2 || !IsPlayerAlive(client))
+            continue;
+
+        int weapon = GetPlayerWeaponSlot(client, 0);    // slot0 = primary
+        if (weapon == -1 || !IsValidEntity(weapon))
+            continue;
+
+        int ammoType = GetEntProp(weapon, Prop_Send, "m_iPrimaryAmmoType");
+        int index    = GetIndexByAmmoType(ammoType);
+        if (index == -1)
+            continue;
+
+        int currentAmmo = GetEntProp(client, Prop_Send, "m_iAmmo", _, ammoType);
+        int newAmmo     = ReCalcReserveAmmoByConVarIndex(currentAmmo, index);
+        GivePlayerItem(client, "Ammo");
+        SetEntProp(client, Prop_Send, "m_iAmmo", newAmmo, _, ammoType);
+    }
+}
+
+int ReCalcReserveAmmoByConVarIndex(int currentAmmo, int index)
+{
+    if (g_iPreAmmoStored[index] > 0)
+    {
+        float ratio = float(currentAmmo) / float(g_iPreAmmoStored[index]);
+        return RoundFloat(float(g_iAmmoStored[index]) * ratio);
+    }
+    return 0;
+}
+
+// ==========================================================================
+// FILE I/O
+// ==========================================================================
+
+bool WriteMultiplierToFile(float multiplier)
+{
+    char path[PLATFORM_MAX_PATH];
+    BuildPath(Path_SM, path, sizeof(path), "data/%s", STORED_FILE);
+    File file = OpenFile(path, "w");
+    if (file == null)
+    {
+        LogError("Failed to open %s for writing", path);
+        return false;
+    }
+    if (!file.WriteLine("%.2f", multiplier))
+    {
+        LogError("Failed to write to %s", path);
+        delete file;
+        return false;
+    }
+    delete file;
+    return true;
+}
+
+bool ReadMultiplierFromFile(float &multiplier)
+{
+    char path[PLATFORM_MAX_PATH];
+    BuildPath(Path_SM, path, sizeof(path), "data/%s", STORED_FILE);
+    if (!FileExists(path))
+        return false;
+
+    File file = OpenFile(path, "r");
+    if (file == null)
+    {
+        LogError("Failed to open %s for reading", path);
+        return false;
+    }
+
+    char buffer[8];
+    if (!file.ReadLine(buffer, sizeof(buffer)))
+    {
+        LogError("Failed to read from %s", path);
+        delete file;
+        return false;
+    }
+    delete file;
+    TrimString(buffer);
+
+    float value = StringToFloat(buffer);
+    if (value < MIN_MULTIPLIER || value > MAX_MULTIPLIER)
+    {
+        LogError("Invalid value in %s: %s", path, buffer);
+        return false;
+    }
+
+    multiplier = ClampFloat(value, MIN_MULTIPLIER, MAX_MULTIPLIER);
+    return true;
+}
+
+// ==========================================================================
+// HELPERS
+// ==========================================================================
+
+int GetIndexByAmmoType(int ammoType)
+{
+    switch (ammoType)
+    {
+        case 5: return 0;     // smg
+        case 7: return 1;     // shotgun
+        case 8: return 2;     // autoshotgun
+        case 9: return 3;     // huntingrifle
+        case 10: return 4;    // sniperrifle
+        case 3: return 5;     // assaultrifle
+    }
+    return -1;
+}
+
+float ClampFloat(float input, float min, float max)
+{
+    if (input < min)
+        return min;
+    if (input > max)
+        return max;
+    return input;
+}
